@@ -28,6 +28,29 @@ async fn health_check() -> impl Responder {
     HttpResponse::Ok().body("Server is healthy")
 }
 
+// Login route to verify user credentials
+async fn login(pool: web::Data<DbPool>, login_request: web::Json<LoginRequest>) -> impl Responder {
+    let login_data = login_request.into_inner();
+    let mut connection = pool.get().expect("Failed to get connection from the pool");
+
+    // Query user by username
+    let user = users_dsl::users
+        .filter(users_dsl::username.eq(login_data.username))
+        .first::<User>(&mut connection);
+
+    match user {
+        Ok(user) => {
+            // Verify the password using bcrypt
+            if verify(login_data.password, &user.password).unwrap_or(false) {
+                HttpResponse::Ok().json(user)
+            } else {
+                HttpResponse::Unauthorized().body("Invalid credentials")
+            }
+        }
+        Err(_) => HttpResponse::Unauthorized().body("Invalid credentials"),
+    }
+}
+
 async fn add_sample(pool: web::Data<DbPool>, sample: web::Json<Sample>) -> impl Responder {
     let new_sample = sample.into_inner();
     let mut connection = pool.get().expect("Failed to get connection from the pool");
@@ -98,6 +121,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
+            .route("/login", web::post().to(login)) // Route to login
             .route("/samples", web::post().to(add_sample))  // Route to add sample
             .route("/samples", web::get().to(get_samples))  // Route to get all samples
             .route("/samples/{id}", web::get().to(get_sample))  // Route to get single sample by ID
