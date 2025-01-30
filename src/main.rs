@@ -6,6 +6,7 @@ use std::env;
 use log::info;
 use actix_web::web::Json;
 use bcrypt::{verify};
+use chrono::NaiveDateTime;
 use crate::models::{Sample, LoginRequest, User};
 
 mod models;
@@ -42,16 +43,17 @@ async fn add_sample(pool: web::Data<DbPool>, sample: web::Json<Sample>) -> impl 
             schema::samples::collected_at.eq(new_sample.collected_at),
             schema::samples::status.eq(new_sample.status),
         ))
-        .returning(schema::samples::id)
-        .get_result::<i32>(&connection);
+        .returning((
+            schema::samples::id,
+            schema::samples::name,
+            schema::samples::sample_type,
+            schema::samples::collected_at,
+            schema::samples::status,
+        ))
+        .get_result::<Sample>(&connection);
 
     match result {
-        Ok(id) => {
-            HttpResponse::Created().json(Sample {
-                id: Some(id),
-                ..new_sample
-            })
-        }
+        Ok(sample) => HttpResponse::Created().json(sample),
         Err(_) => HttpResponse::InternalServerError().body("Error adding sample"),
     }
 }
