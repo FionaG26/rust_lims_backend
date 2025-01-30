@@ -17,3 +17,5 @@ diesel_migrations = "2.1"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 actix-rt = "2.5.0"
+log = "0.4"
+env_logger = "0.10"
