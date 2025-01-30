@@ -7,6 +7,8 @@ use log::info;
 use crate::models::{Sample, LoginRequest, User};
 use crate::schema::samples::dsl as samples_dsl;
 use crate::schema::users::dsl as users_dsl;
+use bcrypt::{verify};
+use chrono::NaiveDateTime;
 
 mod models;
 mod schema;
@@ -71,23 +73,17 @@ async fn get_samples(pool: web::Data<DbPool>) -> impl Responder {
     }
 }
 
-async fn login(pool: web::Data<DbPool>, login: web::Json<LoginRequest>) -> impl Responder {
-    let login_data = login.into_inner();
+async fn delete_sample(pool: web::Data<DbPool>, sample_id: web::Path<i32>) -> impl Responder {
+    let id = sample_id.into_inner();
     let mut connection = pool.get().expect("Failed to get connection from the pool");
 
-    let user = users_dsl::users
-        .filter(users_dsl::username.eq(login_data.username))
-        .first::<User>(&mut connection);
+    let result = diesel::delete(samples_dsl::samples.filter(samples_dsl::id.eq(id)))
+        .execute(&mut connection);
 
-    match user {
-        Ok(user) => {
-            if user.password == login_data.password { // Ideally, compare hashed passwords
-                HttpResponse::Ok().json(user)
-            } else {
-                HttpResponse::Unauthorized().body("Invalid credentials")
-            }
-        }
-        Err(_) => HttpResponse::Unauthorized().body("Invalid credentials"),
+    match result {
+        Ok(0) => HttpResponse::NotFound().body("Sample not found"),
+        Ok(_) => HttpResponse::Ok().body("Sample deleted"),
+        Err(_) => HttpResponse::InternalServerError().body("Error deleting sample"),
     }
 }
 
@@ -102,10 +98,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
-            .route("/samples", web::post().to(add_sample))
-            .route("/samples", web::get().to(get_samples))
-            .route("/samples/{id}", web::get().to(get_sample))
-            .route("/login", web::post().to(login))
+            .route("/samples", web::post().to(add_sample))  // Route to add sample
+            .route("/samples", web::get().to(get_samples))  // Route to get all samples
+            .route("/samples/{id}", web::get().to(get_sample))  // Route to get single sample by ID
+            .route("/samples/{id}", web::delete().to(delete_sample))  // Route to delete a sample by ID
     })
     .bind("127.0.0.1:8080")?
     .run()
