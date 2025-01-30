@@ -1,3 +1,4 @@
+-- Your SQL goes here
 CREATE TABLE samples (
     id SERIAL PRIMARY KEY,
     name VARCHAR NOT NULL,
@@ -5,3 +6,4 @@ CREATE TABLE samples (
     collected_at TIMESTAMP NOT NULL,
     status VARCHAR NOT NULL
 );
+
