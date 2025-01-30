@@ -1,4 +1,3 @@
-// src/main.rs
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
 use diesel::prelude::*;
 use diesel::r2d2::{self, ConnectionManager};
@@ -46,6 +45,26 @@ async fn add_sample(pool: web::Data<DbPool>, sample: web::Json<Sample>) -> impl 
     }
 }
 
+async fn login(pool: web::Data<DbPool>, login: web::Json<LoginRequest>) -> impl Responder {
+    let login_data = login.into_inner();
+    let mut connection = pool.get().expect("Failed to get connection from the pool");
+
+    let user = users_dsl::users
+        .filter(users_dsl::username.eq(login_data.username))
+        .first::<User>(&mut connection);
+
+    match user {
+        Ok(user) => {
+            if user.password == login_data.password { // Ideally, compare hashed passwords
+                HttpResponse::Ok().json(user)
+            } else {
+                HttpResponse::Unauthorized().body("Invalid credentials")
+            }
+        }
+        Err(_) => HttpResponse::Unauthorized().body("Invalid credentials"),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -58,6 +77,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
             .route("/samples", web::post().to(add_sample))
+            .route("/login", web::post().to(login))
     })
     .bind("127.0.0.1:8080")?
     .run()
