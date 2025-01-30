@@ -37,7 +37,7 @@ Ensure you have the following installed:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/rust_lims_backend.git
+git clone https://github.com/FionaG26/rust_lims_backend.git
 cd rust_lims_backend
 ```
 
