@@ -45,6 +45,32 @@ async fn add_sample(pool: web::Data<DbPool>, sample: web::Json<Sample>) -> impl 
     }
 }
 
+async fn get_sample(pool: web::Data<DbPool>, sample_id: web::Path<i32>) -> impl Responder {
+    let id = sample_id.into_inner();
+    let mut connection = pool.get().expect("Failed to get connection from the pool");
+
+    let sample = samples_dsl::samples
+        .filter(samples_dsl::id.eq(id))
+        .first::<Sample>(&mut connection);
+
+    match sample {
+        Ok(sample) => HttpResponse::Ok().json(sample),
+        Err(_) => HttpResponse::NotFound().body("Sample not found"),
+    }
+}
+
+async fn get_samples(pool: web::Data<DbPool>) -> impl Responder {
+    let mut connection = pool.get().expect("Failed to get connection from the pool");
+
+    let samples = samples_dsl::samples
+        .load::<Sample>(&mut connection);
+
+    match samples {
+        Ok(samples) => HttpResponse::Ok().json(samples),
+        Err(_) => HttpResponse::InternalServerError().body("Error fetching samples"),
+    }
+}
+
 async fn login(pool: web::Data<DbPool>, login: web::Json<LoginRequest>) -> impl Responder {
     let login_data = login.into_inner();
     let mut connection = pool.get().expect("Failed to get connection from the pool");
@@ -77,6 +103,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
             .route("/samples", web::post().to(add_sample))
+            .route("/samples", web::get().to(get_samples))
+            .route("/samples/{id}", web::get().to(get_sample))
             .route("/login", web::post().to(login))
     })
     .bind("127.0.0.1:8080")?
