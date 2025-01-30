@@ -1,38 +1,54 @@
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
+use diesel::prelude::*;
+use diesel::r2d2::{self, ConnectionManager};
+use dotenv::dotenv;
+use std::env;
 use log::info;
-use env_logger;
-use sqlx::{PgPool, query_as};
-use chrono::NaiveDateTime;
+use actix_web::web::Json;
+use bcrypt::{verify};
+use crate::models::{Sample, LoginRequest, User};
 
 mod models;
-use models::{Sample, LoginRequest};
+mod schema;
 
-async fn db_pool() -> PgPool {
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    PgPool::connect(&database_url).await.unwrap()
+// Type alias for the database pool
+type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
+
+// Initialize the database pool using environment variables for the database URL
+async fn db_pool() -> DbPool {
+    dotenv().ok();
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
+    r2d2::Pool::builder()
+        .build(manager)
+        .expect("Failed to create pool.")
 }
 
+// Health check route
 async fn health_check() -> impl Responder {
     HttpResponse::Ok().body("Server is healthy")
 }
 
-async fn add_sample(pool: web::Data<PgPool>, sample: web::Json<Sample>) -> impl Responder {
+// Add a sample to the database
+async fn add_sample(pool: web::Data<DbPool>, sample: web::Json<Sample>) -> impl Responder {
     let new_sample = sample.into_inner();
 
-    let result = sqlx::query!(
-        "INSERT INTO samples (name, sample_type, collected_at, status) VALUES ($1, $2, $3, $4) RETURNING id",
-        new_sample.name,
-        new_sample.sample_type,
-        new_sample.collected_at,
-        new_sample.status
-    )
-    .fetch_one(&**pool)
-    .await;
+    let connection = pool.get().expect("Failed to get a connection from the pool");
+
+    let result = diesel::insert_into(schema::samples::table)
+        .values((
+            schema::samples::name.eq(new_sample.name),
+            schema::samples::sample_type.eq(new_sample.sample_type),
+            schema::samples::collected_at.eq(new_sample.collected_at),
+            schema::samples::status.eq(new_sample.status),
+        ))
+        .returning(schema::samples::id)
+        .get_result::<i32>(&connection);
 
     match result {
-        Ok(record) => {
+        Ok(id) => {
             HttpResponse::Created().json(Sample {
-                id: Some(record.id),
+                id: Some(id),
                 ..new_sample
             })
         }
@@ -40,34 +56,35 @@ async fn add_sample(pool: web::Data<PgPool>, sample: web::Json<Sample>) -> impl 
     }
 }
 
-async fn get_samples(pool: web::Data<PgPool>, status: Option<String>) -> impl Responder {
+// Get samples from the database, optionally filtering by status
+async fn get_samples(pool: web::Data<DbPool>, status: Option<String>) -> impl Responder {
+    let connection = pool.get().expect("Failed to get a connection from the pool");
+
     let query = if let Some(status) = status {
-        "SELECT * FROM samples WHERE status = $1"
+        schema::samples::table
+            .filter(schema::samples::status.eq(status))
+            .load::<Sample>(&connection)
     } else {
-        "SELECT * FROM samples"
+        schema::samples::table
+            .load::<Sample>(&connection)
     };
 
-    let samples = sqlx::query_as::<_, Sample>(query)
-        .bind(status)
-        .fetch_all(&**pool)
-        .await;
-
-    match samples {
+    match query {
         Ok(samples) => HttpResponse::Ok().json(samples),
         Err(_) => HttpResponse::InternalServerError().body("Error retrieving samples"),
     }
 }
 
-async fn update_sample_status(pool: web::Data<PgPool>, id: web::Path<i32>, sample: web::Json<Sample>) -> impl Responder {
+// Update sample status
+async fn update_sample_status(pool: web::Data<DbPool>, id: web::Path<i32>, sample: web::Json<Sample>) -> impl Responder {
     let updated_sample = sample.into_inner();
 
-    let result = sqlx::query!(
-        "UPDATE samples SET status = $1 WHERE id = $2",
-        updated_sample.status,
-        *id
-    )
-    .execute(&**pool)
-    .await;
+    let connection = pool.get().expect("Failed to get a connection from the pool");
+
+    let result = diesel::update(schema::samples::table)
+        .filter(schema::samples::id.eq(*id))
+        .set(schema::samples::status.eq(updated_sample.status))
+        .execute(&connection);
 
     match result {
         Ok(_) => HttpResponse::Ok().json("Sample status updated"),
@@ -75,10 +92,13 @@ async fn update_sample_status(pool: web::Data<PgPool>, id: web::Path<i32>, sampl
     }
 }
 
-async fn delete_sample(pool: web::Data<PgPool>, id: web::Path<i32>) -> impl Responder {
-    let result = sqlx::query!("DELETE FROM samples WHERE id = $1", *id)
-        .execute(&**pool)
-        .await;
+// Delete a sample from the database
+async fn delete_sample(pool: web::Data<DbPool>, id: web::Path<i32>) -> impl Responder {
+    let connection = pool.get().expect("Failed to get a connection from the pool");
+
+    let result = diesel::delete(schema::samples::table)
+        .filter(schema::samples::id.eq(*id))
+        .execute(&connection);
 
     match result {
         Ok(_) => HttpResponse::NoContent().finish(),
@@ -86,22 +106,30 @@ async fn delete_sample(pool: web::Data<PgPool>, id: web::Path<i32>) -> impl Resp
     }
 }
 
-async fn login(pool: web::Data<PgPool>, login_request: web::Json<LoginRequest>) -> impl Responder {
-    use bcrypt::{verify};
+// Login functionality with password verification
+async fn login(pool: web::Data<DbPool>, login_request: web::Json<LoginRequest>) -> impl Responder {
+    use crate::schema::users::dsl::*;
 
-    let user = sqlx::query!("SELECT password FROM users WHERE username = $1", login_request.username)
-        .fetch_one(&**pool)
-        .await;
+    let connection = pool.get().expect("Failed to get a connection from the pool");
 
-    match user {
-        Ok(record) => {
-            if verify(&login_request.password, &record.password).unwrap_or(false) {
+    let user_result = users
+        .filter(username.eq(&login_request.username))
+        .first::<User>(&connection);
+
+    match user_result {
+        Ok(user) => {
+            if verify(&login_request.password, &user.password).unwrap_or(false) {
+                info!("Login successful for user: {}", user.username);
                 HttpResponse::Ok().json("Login successful")
             } else {
-                HttpResponse::Unauthorized().body("Invalid credentials")
+                info!("Invalid password for user: {}", login_request.username);
+                HttpResponse::Unauthorized().json("Invalid credentials")
             }
+        },
+        Err(_) => {
+            info!("User not found: {}", login_request.username);
+            HttpResponse::NotFound().json("User not found")
         }
-        Err(_) => HttpResponse::Unauthorized().body("User not found"),
     }
 }
 
@@ -111,7 +139,7 @@ async fn main() -> std::io::Result<()> {
     info!("🚀 Server running at http://127.0.0.1:8080");
 
     let pool = db_pool().await;
-    
+
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone())) // Share the database pool
