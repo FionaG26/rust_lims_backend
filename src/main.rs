@@ -8,7 +8,6 @@ use crate::models::{Sample, LoginRequest, User};
 use crate::schema::samples::dsl as samples_dsl;
 use crate::schema::users::dsl as users_dsl;
 use bcrypt::{verify};
-use chrono::NaiveDateTime;
 
 mod models;
 mod schema;
