@@ -8,6 +8,7 @@ use actix_web::web::Json;
 use bcrypt::{verify};
 use chrono::NaiveDateTime;
 use crate::models::{Sample, LoginRequest, User};
+use crate::schema::{samples, users}; 
 
 mod models;
 mod schema;
