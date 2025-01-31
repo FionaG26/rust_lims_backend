@@ -8,6 +8,7 @@ pub struct Sample {
     pub id: i32,
     pub name: String,
     pub sample_type: String,
+    #[serde(with = "ts_seconds")]
     pub collected_at: NaiveDateTime,
     pub status: String,
 }
