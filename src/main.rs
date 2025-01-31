@@ -4,10 +4,10 @@ use diesel::r2d2::{self, ConnectionManager};
 use dotenv::dotenv;
 use std::env;
 use log::info;
+use bcrypt::{hash, verify, DEFAULT_COST};
 use crate::models::{Sample, LoginRequest, User};
 use crate::schema::samples::dsl as samples_dsl;
 use crate::schema::users::dsl as users_dsl;
-use bcrypt::{verify};
 
 mod models;
 mod schema;
@@ -27,19 +27,47 @@ async fn health_check() -> impl Responder {
     HttpResponse::Ok().body("Server is healthy")
 }
 
-// Login route to verify user credentials
+// One-time function to hash plaintext passwords in the database
+async fn hash_existing_passwords(pool: web::Data<DbPool>) {
+    use crate::schema::users::dsl::{users, id, password};
+    let mut connection = pool.get().expect("Failed to get connection from the pool");
+
+    let results = users
+        .select((id, password))
+        .load::<(i32, String)>(&mut connection)
+        .expect("Error loading users");
+
+    for (user_id, plaintext_password) in results {
+        // Skip already hashed passwords
+        if plaintext_password.starts_with("$2b$") {
+            continue;
+        }
+
+        match hash(&plaintext_password, DEFAULT_COST) {
+            Ok(hashed_password) => {
+                diesel::update(users.filter(id.eq(user_id)))
+                    .set(password.eq(hashed_password))
+                    .execute(&mut connection)
+                    .expect("Error updating password");
+                println!("Password hashed for user ID: {}", user_id);
+            }
+            Err(err) => {
+                eprintln!("Failed to hash password for user ID {}: {}", user_id, err);
+            }
+        }
+    }
+}
+
 async fn login(pool: web::Data<DbPool>, login_request: web::Json<LoginRequest>) -> impl Responder {
     let login_data = login_request.into_inner();
     let mut connection = pool.get().expect("Failed to get connection from the pool");
 
-    // Query user by username
     let user = users_dsl::users
         .filter(users_dsl::username.eq(login_data.username))
         .first::<User>(&mut connection);
 
     match user {
         Ok(user) => {
-            // Verify the password using bcrypt
             if verify(login_data.password, &user.password).unwrap_or(false) {
                 HttpResponse::Ok().json(user)
             } else {
@@ -86,8 +114,7 @@ async fn get_sample(pool: web::Data<DbPool>, sample_id: web::Path<i32>) -> impl 
 async fn get_samples(pool: web::Data<DbPool>) -> impl Responder {
     let mut connection = pool.get().expect("Failed to get connection from the pool");
 
-    let samples = samples_dsl::samples
-        .load::<Sample>(&mut connection);
+    let samples = samples_dsl::samples.load::<Sample>(&mut connection);
 
     match samples {
         Ok(samples) => HttpResponse::Ok().json(samples),
@@ -116,15 +143,18 @@ async fn main() -> std::io::Result<()> {
 
     let pool = db_pool();
 
+    // Run the one-time password hashing function
+    hash_existing_passwords(web::Data::new(pool.clone())).await;
+
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .route("/health", web::get().to(health_check))
-            .route("/login", web::post().to(login)) // Route to login
-            .route("/samples", web::post().to(add_sample))  // Route to add sample
-            .route("/samples", web::get().to(get_samples))  // Route to get all samples
-            .route("/samples/{id}", web::get().to(get_sample))  // Route to get single sample by ID
-            .route("/samples/{id}", web::delete().to(delete_sample))  // Route to delete a sample by ID
+            .route("/login", web::post().to(login))
+            .route("/samples", web::post().to(add_sample))
+            .route("/samples", web::get().to(get_samples))
+            .route("/samples/{id}", web::get().to(get_sample))
+            .route("/samples/{id}", web::delete().to(delete_sample))
     })
     .bind("127.0.0.1:8080")?
     .run()
